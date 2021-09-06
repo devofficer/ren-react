@@ -99,7 +99,138 @@ class App extends React.Component {
 
   log = (message) => {
     this.setState({ message });
-  };  
+  };
+
+  deposit = async () => {
+    this.logError(""); // Reset error
+
+    const { web3, renJS } = this.state;
+
+    this.log(`Generating deposit address...`);
+
+    const amount = 0.003; // BTC
+    const mint = await renJS.lockAndMint({
+      // Send BTC from the Bitcoin blockchain to the Ethereum blockchain.
+      asset: "BTC",
+      from: Bitcoin(),
+      to: Ethereum(web3.currentProvider).Contract({
+        // The contract we want to interact with
+        sendTo: contractAddress,
+
+        // The name of the function we want to call
+        contractFn: "deposit",
+
+        // Arguments expected for calling `deposit`
+        contractParams: [
+          {
+            name: "_msg",
+            type: "bytes",
+            value: Buffer.from(`Depositing ${amount} BTC`),
+          },
+        ],
+      }),
+    });
+
+    // Show the gateway address to the user so that they can transfer their BTC to it.
+    this.log(`Deposit ${amount} BTC to ${mint.gatewayAddress}`);
+
+    mint.on("deposit", async (deposit) => {
+      // Details of the deposit are available from `deposit.depositDetails`.
+
+      const hash = deposit.txHash();
+      const depositLog = (msg) =>
+        this.log(
+          `BTC deposit: ${Bitcoin.utils.transactionExplorerLink(
+            deposit.depositDetails.transaction,
+            "testnet"
+          )}\n
+          RenVM Hash: ${hash}\n
+          Status: ${deposit.status}\n
+          ${msg}`
+        );
+
+      await deposit
+        .confirmed()
+        .on("target", (target) => depositLog(`0/${target} confirmations`))
+        .on("confirmation", (confs, target) =>
+          depositLog(`${confs}/${target} confirmations`)
+        );
+
+      await deposit
+        .signed()
+        // Print RenVM status - "pending", "confirming" or "done".
+        .on("status", (status) => depositLog(`Status: ${status}`));
+
+      await deposit
+        .mint()
+        // Print Ethereum transaction hash.
+        .on("transactionHash", (txHash) => depositLog(`Mint tx: ${txHash}`));
+
+      this.log(`Deposited ${amount} BTC.`);
+    });
+  };
+
+  withdraw = async () => {
+    this.logError(""); // Reset error
+
+    const { web3, renJS, balance } = this.state;
+
+    const recipient = prompt("Enter BTC recipient:");
+    const amount = balance;
+    const burnAndRelease = await renJS.burnAndRelease({
+      // Send BTC from Ethereum back to the Bitcoin blockchain.
+      asset: "BTC",
+      to: Bitcoin().Address(recipient),
+      from: Ethereum(web3.currentProvider).Contract((btcAddress) => ({
+        sendTo: contractAddress,
+
+        contractFn: "withdraw",
+
+        contractParams: [
+          {
+            type: "bytes",
+            name: "_msg",
+            value: Buffer.from(`Withdrawing ${amount} BTC`),
+          },
+          {
+            type: "bytes",
+            name: "_to",
+            value: btcAddress,
+          },
+          {
+            type: "uint256",
+            name: "_amount",
+            value: RenJS.utils.toSmallestUnit(amount, 8),
+          },
+        ],
+      })),
+    });
+
+    let confirmations = 0;
+    await burnAndRelease
+      .burn()
+      // Ethereum transaction confirmations.
+      .on("confirmation", (confs) => {
+        confirmations = confs;
+      })
+      // Print Ethereum transaction hash.
+      .on("transactionHash", (txHash) =>
+        this.log(`Ethereum transaction: ${String(txHash)}\nSubmitting...`)
+      );
+
+    await burnAndRelease
+      .release()
+      // Print RenVM status - "pending", "confirming" or "done".
+      .on("status", (status) =>
+        status === "confirming"
+          ? this.log(`${status} (${confirmations}/15)`)
+          : this.log(status)
+      )
+      // Print RenVM transaction hash
+      .on("txHash", (hash) => this.log(`RenVM hash: ${hash}`));
+
+    this.log(`Withdrew ${amount} BTC to ${recipient}.`);
+  };
 }
 
 export default App;
